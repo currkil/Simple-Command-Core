@@ -2,6 +2,7 @@ plugins {
     id 'eclipse'
     id 'idea'
     id 'net.minecraftforge.gradle' version '[6.0.16,6.2)'
+    id 'maven-publish'
 }
 
 
@@ -117,14 +118,10 @@ jarJar.enable()
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
-    // Put repositories for dependencies here
-    // ForgeGradle automatically adds the Forge maven and Maven Central for you
-
-    // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
-    // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
-    // flatDir {
-    //     dir 'libs'
-    // }
+    maven {
+        url = uri("http://192.168.1.4:8080/releases")
+        allowInsecureProtocol = true
+    }
 }
 
 dependencies {
@@ -139,6 +136,7 @@ dependencies {
     // 运行时由 Core 的 JiJ 提供，所以这里同时声明 jarJar。
     implementation "${csc_group_id}:sc_csc:${csc_version}"
     jarJar "${csc_group_id}:sc_csc:${csc_version_range}"
+    minecraftLibrary "${csc_group_id}:sc_csc:${csc_version}"
 
     // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
@@ -218,4 +216,23 @@ tasks.register('smokeTest', JavaExec) {
 
 tasks.named('check') {
     dependsOn 'smokeTest'
+}
+
+def repoToken = project.findProperty("reposiliteToken") ?: ""
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        maven {
+            url = "http://192.168.1.4:8080/releases"
+            credentials {
+                username = "admin"
+                password = repoToken
+            }
+            allowInsecureProtocol = true
+        }
+    }
 }
