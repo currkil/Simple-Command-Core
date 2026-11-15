@@ -1,0 +1,18 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven {
+            name = 'MinecraftForge'
+            url = 'https://maven.minecraftforge.net/'
+        }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.7.0'
+}
+
+rootProject.name = 'simple-command-core'
+
+// CSC 是独立插件工程（Simple Command CSC/），这里用组合构建接入，再由 Core 的 jarJar 内嵌。
+includeBuild('../Simple Command CSC')
