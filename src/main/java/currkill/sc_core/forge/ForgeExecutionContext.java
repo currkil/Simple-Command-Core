@@ -1,13 +1,15 @@
 package currkill.sc_core.forge;
 
 import com.mojang.brigadier.context.CommandContext;
+import currkill.sc_csc.api.CscContext;
 import currkill.sc_core.Sc_core;
 import currkill.sc_core.SimpleCommandCore;
 import currkill.sc_core.api.CommandLogger;
 import currkill.sc_core.api.ExecutionContext;
 import currkill.sc_core.api.PlayerDataStore;
 import currkill.sc_core.api.ScPaths;
-import currkill.sc_core.api.VariableProvider;
+import currkill.sc_core.api.VariableStore;
+import currkill.sc_core.kernel.HostCscContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -16,7 +18,8 @@ import net.minecraft.world.entity.Entity;
 import java.util.Optional;
 
 /**
- * Forge 平台的 {@link ExecutionContext} 实现：把 Brigadier 的 {@code CommandContext} 包成内核能用的抽象。
+ * Forge 平台的 {@link ExecutionContext} 实现：把 Brigadier 的 {@code CommandContext}
+ * 包成内核能用的抽象。聊天 REPL 走没有参数来源的构造重载。
  */
 public final class ForgeExecutionContext implements ExecutionContext {
 
@@ -26,6 +29,16 @@ public final class ForgeExecutionContext implements ExecutionContext {
     public ForgeExecutionContext(CommandContext<CommandSourceStack> context) {
         this.context = context;
         this.source = context.getSource();
+    }
+
+    /** 没有参数来源的上下文，供聊天 REPL 使用。 */
+    public ForgeExecutionContext(CommandSourceStack source) {
+        this.context = null;
+        this.source = source;
+    }
+
+    public CommandSourceStack source() {
+        return source;
     }
 
     @Override
@@ -63,9 +76,8 @@ public final class ForgeExecutionContext implements ExecutionContext {
 
     @Override
     public int intArg(String name) {
-        String raw = arg(name);
         try {
-            return (int) Double.parseDouble(raw.trim());
+            return (int) Double.parseDouble(arg(name).trim());
         } catch (NumberFormatException e) {
             return 0;
         }
@@ -73,9 +85,8 @@ public final class ForgeExecutionContext implements ExecutionContext {
 
     @Override
     public double doubleArg(String name) {
-        String raw = arg(name);
         try {
-            return Double.parseDouble(raw.trim());
+            return Double.parseDouble(arg(name).trim());
         } catch (NumberFormatException e) {
             return 0.0D;
         }
@@ -112,7 +123,7 @@ public final class ForgeExecutionContext implements ExecutionContext {
     }
 
     @Override
-    public VariableProvider variables() {
+    public VariableStore variables() {
         return WorldVariableData.get(source.getServer());
     }
 
@@ -121,7 +132,16 @@ public final class ForgeExecutionContext implements ExecutionContext {
         return PlayerDataStorage.get(source.getServer());
     }
 
+    @Override
+    public CscContext csc() {
+        return new HostCscContext(variables(), this::reply, this::error, this::gameLog,
+                commandLog(), paths());
+    }
+
     private Object rawArgument(String name) {
+        if (context == null) {
+            return null;
+        }
         try {
             return context.getArgument(name, Object.class);
         } catch (IllegalArgumentException e) {

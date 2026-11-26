@@ -95,6 +95,22 @@ public final class ScPaths {
         return cacheDir().resolve(name);
     }
 
+    /** 脚本目录 {@code config/sc/scripts}。 */
+    public Path scriptsDir() {
+        return configRoot.resolve("scripts");
+    }
+
+    /** 脚本文件；不带 {@code .csc} 后缀时自动补上。 */
+    public Path scriptFile(String name) {
+        String fileName = name.toLowerCase().endsWith(".csc") ? name : name + ".csc";
+        return scriptsDir().resolve(fileName);
+    }
+
+    /** CSC 文件流的根目录 {@code config/sc/csc/files}；脚本只能写到这里面。 */
+    public Path cscFilesDir() {
+        return configRoot.resolve("csc").resolve("files");
+    }
+
     /** 确保目录存在，失败直接抛出（配置/日志目录属于必需路径）。 */
     public static Path ensureDir(Path dir) {
         try {

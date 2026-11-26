@@ -13,11 +13,13 @@ import java.util.function.Consumer;
 /**
  * 命名空间注册表：{@code Map<String, NamespaceEntry>}。
  *
- * <p>{@code core} 是内置命名空间，由 Core 自己注册，不走子模组流程。
+ * <p>{@code csc} 是内置命名空间，由 Core 自己注册，不走子模组流程。CSC 的全部指令
+ * （{@code var} / {@code list} / {@code io} / {@code log} / {@code file} / {@code run} /
+ * {@code repl} / {@code sys}）都挂在这里。
  */
 public final class NamespaceRegistry {
 
-    public static final String CORE_NAMESPACE = "core";
+    public static final String CSC_NAMESPACE = "csc";
 
     private final Map<String, NamespaceEntry> entries = new LinkedHashMap<>();
     private final ConfigManager configs;

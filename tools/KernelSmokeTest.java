@@ -1,3 +1,5 @@
+import currkill.sc_csc.api.CscType;
+import currkill.sc_csc.api.CscValue;
 import currkill.sc_core.SimpleCommandCore;
 import currkill.sc_core.api.CommandLogger;
 import currkill.sc_core.api.ExecutionContext;
@@ -8,12 +10,14 @@ import currkill.sc_core.api.PlayerDataStore;
 import currkill.sc_core.api.ScArgumentType;
 import currkill.sc_core.api.ScCommandNode;
 import currkill.sc_core.api.ScPaths;
-import currkill.sc_core.api.VariableProvider;
+import currkill.sc_core.api.VariableStore;
 import currkill.sc_core.kernel.CommandRouter;
-import currkill.sc_core.kernel.CoreCommands;
 import currkill.sc_core.kernel.CoreServices;
+import currkill.sc_core.kernel.CscCommands;
+import currkill.sc_core.kernel.HostCscContext;
 import currkill.sc_core.kernel.NamespaceEntry;
 import currkill.sc_core.kernel.NamespaceRegistry;
+import currkill.sc_core.kernel.ValueCodec;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,9 +30,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * 内核冒烟测试：不启动 Minecraft，验证注册表、配置托管、指令路由、core 指令、CSC 接线。
- *
- * <p>只碰 kernel / api 包，不碰 forge 包，所以可以脱离游戏跑。
+ * 内核冒烟测试：不启动 Minecraft，验证注册表、配置托管、指令路由、CSC 指令、
+ * 变量编码、流目录与 REPL 会话表。
  */
 public final class KernelSmokeTest {
 
@@ -36,7 +39,7 @@ public final class KernelSmokeTest {
     private static int fail;
 
     public static void main(String[] args) throws Exception {
-        Path root = Files.createTempDirectory("sc-kernel-smoke");
+        Path root = Files.createTempDirectory("sc-core-smoke");
         Path configRoot = root.resolve("config").resolve("sc");
         Path worldRoot = root.resolve("world");
         Files.createDirectories(worldRoot);
@@ -45,11 +48,11 @@ public final class KernelSmokeTest {
         CoreServices services = new CoreServices(paths, CommandLogger.NOOP, msg -> System.out.println("WARN " + msg));
         SimpleCommandCore.init(services);
 
-        // 1. 注册内置 core
+        // 1. 注册内置 csc 命名空间
         SimpleCommandCore.register(ModRegistration.builder("sc_core")
-                .namespace("core").commands(CoreCommands::build).build());
+                .namespace("csc").commands(CscCommands::build).build());
 
-        // 2. 注册一个假子模组，带短名与业务配置默认值
+        // 2. 再注册一个假子模组，验证短名与配置托管
         SimpleCommandCore.register(ModRegistration.builder("sc_test")
                 .namespace("test")
                 .commands(KernelSmokeTest::buildTestCommands)
@@ -59,7 +62,7 @@ public final class KernelSmokeTest {
                 .build());
 
         NamespaceRegistry registry = services.registry();
-        check("core 已注册", registry.contains("core"));
+        check("csc 已注册", registry.contains("csc"));
         check("test 已注册", registry.contains("test"));
         check("重复注册被拒绝",
                 String.valueOf(registry.register(ModRegistration.builder("x").namespace("test").build())), "false");
@@ -85,80 +88,119 @@ public final class KernelSmokeTest {
         // 4. 指令路由
         CommandRouter router = new CommandRouter(registry, msg -> System.out.println("WARN " + msg));
         List<ScCommandNode> scChildren = router.scChildren();
-        ScCommandNode testNode = find(scChildren, "test");
-        check("/sc test 存在", String.valueOf(testNode != null), "true");
-        check("每个命名空间都有 shortcommand", String.valueOf(find(testNode.children(), "shortcommand") != null), "true");
-        check("每个命名空间都有 saveconfig", String.valueOf(find(testNode.children(), "saveconfig") != null), "true");
-        check("每个命名空间都有 reloadconfig", String.valueOf(find(testNode.children(), "reloadconfig") != null), "true");
-        check("子模组指令挂上了", String.valueOf(find(testNode.children(), "ping") != null), "true");
-        check("短名指令挂了 ping", String.valueOf(find(router.aliasRoots(), "ping") != null), "true");
-        check("多级路径短名挂了 deep", String.valueOf(find(router.aliasRoots(), "deep") != null), "true");
+        ScCommandNode cscNode = find(scChildren, "csc");
+        check("/sc csc 存在", String.valueOf(cscNode != null), "true");
+        check("每个命名空间都有 shortcommand", String.valueOf(find(cscNode.children(), "shortcommand") != null), "true");
+        check("csc 下有 run", String.valueOf(find(cscNode.children(), "run") != null), "true");
+        check("csc 下有 repl", String.valueOf(find(cscNode.children(), "repl") != null), "true");
+        check("csc 下有语句入口", String.valueOf(find(cscNode.children(), "statement") != null), "true");
+        check("短名 ping 已注册", String.valueOf(find(router.aliasRoots(), "ping") != null), "true");
+        check("多级路径短名 deep 已注册", String.valueOf(find(router.aliasRoots(), "deep") != null), "true");
 
-        // 5. 执行效果：ping
+        // 5. 通过 /sc csc <语句> 走完整链路
         FakeContext ctx = new FakeContext(paths);
-        int rc = find(router.aliasRoots(), "ping").effect().execute(ctx);
-        check("ping 效果返回 1", String.valueOf(rc), "1");
-        check("ping 回复了 pong", String.valueOf(ctx.replies.contains("pong")), "true");
+        ScCommandNode statement = find(cscNode.children(), "statement");
 
-        // 6. 执行 core var create / set / delete
-        ScCommandNode coreNode = find(scChildren, "core");
-        ScCommandNode varNode = find(coreNode.children(), "var");
-        ScCommandNode createNode = find(varNode.children(), "create");
-        ScCommandNode createName = find(createNode.children(), "name");
-        ScCommandNode createValue = find(createName.children(), "value");
+        run(statement, ctx, "var new a int 1");
+        check("语句：var new", text(ctx.vars.get("a")), "1");
+        run(statement, ctx, "var set a %a% + 41");
+        check("语句：var set 求值", text(ctx.vars.get("a")), "42");
+        run(statement, ctx, "io cout \"a is %a%\" to text");
+        check("语句：io cout", ctx.lastReply(), "a is 42");
+        run(statement, ctx, "list new arr int [1, 2, 3]");
+        check("语句：list new", text(ctx.vars.get("arr")), "[1, 2, 3]");
+        check("语句：列表长度", String.valueOf(ctx.vars.get("arr").size()), "3");
+        run(statement, ctx, "var delete a");
+        check("语句：var delete", String.valueOf(ctx.vars.has("a")), "false");
+        run(statement, ctx, "var set missing 1");
+        check("语句错误会报到执行者", String.valueOf(ctx.hasError("变量不存在")), "true");
 
-        ctx.args.put("name", "greeting");
-        ctx.args.put("value", "hello");
-        check("var create 成功", String.valueOf(createValue.effect().execute(ctx)), "1");
-        check("变量已写入", ctx.vars.get("greeting").orElse("<none>"), "hello");
-        check("变量已存在时 create 失败", String.valueOf(createValue.effect().execute(ctx)), "0");
+        // 6. run：读脚本文件
+        Path script = paths.scriptFile("demo");
+        Files.createDirectories(script.getParent());
+        Files.writeString(script, "var new x int 7\nio cout \"x is %x%\" to text\n");
+        ScCommandNode runNode = find(cscNode.children(), "run");
+        ScCommandNode scriptArg = find(runNode.children(), "script");
+        ctx.args.put("script", "demo");
+        expectCode("run 返回 1", scriptArg.effect().execute(ctx), 1);
+        check("run 执行了脚本", ctx.lastReply(), "x is 7");
 
-        ScCommandNode numberNode = find(createValue.children(), "number");
-        ctx.args.put("name", "count");
-        ctx.args.put("value", "abc");
-        check("类型提示拒绝非数字", String.valueOf(numberNode.effect().execute(ctx)), "0");
-        ctx.args.put("value", "42");
-        check("类型提示接受数字", String.valueOf(numberNode.effect().execute(ctx)), "1");
-        check("变量值存进去了", ctx.vars.get("count").orElse("<none>"), "42");
+        ctx.args.put("script", "not-exists");
+        expectCode("run 找不到脚本时失败", scriptArg.effect().execute(ctx), 0);
 
-        // 7. 变量接进 CSC
-        check("CSC 读到变量", SimpleCommandCore.formatText("值=%greeting%", ctx.vars), "值=hello");
-        check("CSC 表达式用到变量", SimpleCommandCore.formatText("/!(%count% * 2)", ctx.vars), "84");
-        check("CSC 错误不改动其他片段",
-                SimpleCommandCore.formatText("a %missing% b", ctx.vars), "a %missing% b");
+        // 7. 文件流与日志流（同一条指令里用 ; 分隔多条语句，流在本次执行内有效）
+        run(statement, ctx, "file new f1 to notes.txt; io cout \"hello\" to f1");
+        Path fileStream = paths.cscFilesDir().resolve("notes.txt");
+        check("文件流落在固定目录", String.valueOf(Files.isRegularFile(fileStream)), "true");
+        check("文件流内容", Files.readString(fileStream).trim(), "INFO hello");
 
-        ScCommandNode setNode = find(varNode.children(), "set");
-        ScCommandNode setName = find(setNode.children(), "name");
-        ScCommandNode setValue = find(setName.children(), "value");
-        ctx.args.put("name", "greeting");
-        ctx.args.put("value", "hi");
-        check("var set 成功", String.valueOf(setValue.effect().execute(ctx)), "1");
-        check("var set 生效", ctx.vars.get("greeting").orElse("<none>"), "hi");
-        ctx.args.put("name", "missing");
-        check("var set 未知变量失败", String.valueOf(setValue.effect().execute(ctx)), "0");
+        run(statement, ctx, "file new bad to ../escape.txt");
+        check("文件流拒绝越界路径", String.valueOf(ctx.hasError("无法新建文件流")), "true");
 
-        ScCommandNode deleteNode = find(varNode.children(), "delete");
-        ScCommandNode deleteName = find(deleteNode.children(), "name");
-        ctx.args.put("name", "greeting");
-        check("var delete 成功", String.valueOf(deleteName.effect().execute(ctx)), "1");
-        check("变量已删除", String.valueOf(ctx.vars.get("greeting").isEmpty()), "true");
-        check("删除不存在的变量失败", String.valueOf(deleteName.effect().execute(ctx)), "0");
+        run(statement, ctx, "log new log1 to smoke.log; io cout \"line\" to log1");
+        Path logFile = worldRoot.resolve("sc_logs").resolve("smoke.log");
+        check("日志流落在 sc_logs", String.valueOf(Files.isRegularFile(logFile)), "true");
+        check("日志流内容", Files.readString(logFile).trim(), "INFO line");
 
-        // 8. 短名开关关闭后别名消失
-        testConfig.put("shortcommand", false);
-        check("短名关闭后无别名", String.valueOf(find(router.aliasRoots(), "ping") != null), "false");
-        testConfig.put("shortcommand", true);
+        // glog 是内置流，直接进游戏日志
+        run(statement, ctx, "io cout \"to game log\" to glog");
+        check("glog 写游戏日志", ctx.lastGameLog(), "[INFO] to game log");
 
-        // 9. 路径管理
-        services.configs().save(testConfig);
-        check("备份目录可解析", String.valueOf(paths.backupsDir().equals(worldRoot.resolve("sc_backups"))), "true");
-        check("日志目录可解析", String.valueOf(paths.logsDir().equals(worldRoot.resolve("sc_logs"))), "true");
-        check("缓存写失败不抛异常", String.valueOf(paths.writeCache("x.txt", "y") || true), "true");
+        // 会话级上下文：跨多次执行保持日志流
+        String sid = "session-player";
+        HostCscContext session = services.sessions().of(sid, () -> new HostCscContext(
+                ctx.vars, ctx::reply, ctx::error, ctx::gameLog, CommandLogger.NOOP, paths));
+        currkill.sc_csc.api.CscEvaluator.evaluateScript("log new s1 to session.log", session);
+        currkill.sc_csc.api.CscEvaluator.evaluateScript("io cout \"across lines\" to s1", session);
+        services.sessions().close(sid);
+        Path sessionLog = worldRoot.resolve("sc_logs").resolve("session.log");
+        check("会话流跨多次执行", Files.readString(sessionLog).trim(), "INFO across lines");
+        check("关闭会话后不残留", String.valueOf(services.sessions().size()), "0");
+
+        // 8. 值的编码往返
+        checkRoundTrip("int", CscValue.ofInt(-42));
+        checkRoundTrip("float", CscValue.ofFloat(1.5D));
+        checkRoundTrip("string", CscValue.ofString("a;b:c\n\"d\""));
+        checkRoundTrip("bool", CscValue.ofBool(true));
+        checkRoundTrip("list", CscValue.ofList(List.of(CscValue.ofInt(1), CscValue.ofString("x"))));
+        checkRoundTrip("嵌套 list", CscValue.ofList(List.of(
+                CscValue.ofList(List.of(CscValue.ofInt(1))), CscValue.ofBool(false))));
+
+        // 9. REPL 会话表
+        check("REPL 默认关闭", String.valueOf(services.repl().isActive("u1")), "false");
+        services.repl().toggle("u1");
+        check("REPL 可开启", String.valueOf(services.repl().isActive("u1")), "true");
+        services.repl().toggle("u1");
+        check("REPL 可关闭", String.valueOf(services.repl().isActive("u1")), "false");
+
+        // 10. 路径约定
+        check("备份目录", paths.backupsDir().toString(), worldRoot.resolve("sc_backups").toString());
+        check("脚本目录", paths.scriptsDir().toString(), configRoot.resolve("scripts").toString());
+        check("文件流根目录", paths.cscFilesDir().toString(),
+                configRoot.resolve("csc").resolve("files").toString());
 
         System.out.println("PASS=" + pass + " FAIL=" + fail);
         if (fail > 0) {
             System.exit(1);
         }
+    }
+
+    // ---------------------------------------------------------------- 辅助
+
+    private static void run(ScCommandNode statementNode, FakeContext ctx, String statement) {
+        ctx.args.put("statement", statement);
+        statementNode.effect().execute(ctx);
+    }
+
+    private static String text(CscValue value) {
+        return value == null ? "<null>" : value.asString();
+    }
+
+    private static void checkRoundTrip(String label, CscValue value) {
+        CscValue decoded = ValueCodec.decode(ValueCodec.encode(value));
+        check("编码往返 " + label,
+                decoded == null ? "<null>" : decoded.type().keyword() + ":" + decoded.asString(),
+                value.type().keyword() + ":" + value.asString());
     }
 
     private static List<ScCommandNode> buildTestCommands() {
@@ -195,17 +237,103 @@ public final class KernelSmokeTest {
         }
     }
 
-    /** 内存版执行上下文，不依赖 Minecraft。 */
+    private static void expectCode(String label, int actual, int expected) {
+        check(label, Integer.toString(actual), Integer.toString(expected));
+    }
+
+    /** 内存版变量表，行为与世界存档一致。 */
+    private static final class MemoryVariables implements VariableStore {
+        private final Map<String, CscValue> values = new LinkedHashMap<>();
+        private final Map<String, CscType> types = new LinkedHashMap<>();
+
+        public boolean has(String name) {
+            return values.containsKey(name);
+        }
+
+        public CscValue get(String name) {
+            return values.get(name);
+        }
+
+        public CscType typeOf(String name) {
+            return types.get(name);
+        }
+
+        public void declare(String name, CscType type, CscValue initial) {
+            values.put(name, initial);
+            types.put(name, type);
+        }
+
+        public void set(String name, CscValue value) {
+            values.put(name, value);
+            types.putIfAbsent(name, value.type());
+        }
+
+        public void delete(String name) {
+            values.remove(name);
+            types.remove(name);
+        }
+
+        public Set<String> names() {
+            return Set.copyOf(values.keySet());
+        }
+
+        public Map<String, CscValue> snapshot() {
+            return Map.copyOf(values);
+        }
+    }
+
+    /** 内存版玩家数据。 */
+    private static final class MemoryPlayers implements PlayerDataStore {
+        private final Map<UUID, Map<String, String>> data = new LinkedHashMap<>();
+
+        public Optional<String> get(UUID player, String key) {
+            return Optional.ofNullable(data.getOrDefault(player, Map.of()).get(key));
+        }
+
+        public void set(UUID player, String key, String value) {
+            data.computeIfAbsent(player, k -> new LinkedHashMap<>()).put(key, value);
+        }
+
+        public void remove(UUID player, String key) {
+            data.getOrDefault(player, new LinkedHashMap<>()).remove(key);
+        }
+
+        public Set<String> keys(UUID player) {
+            return Set.copyOf(data.getOrDefault(player, Map.of()).keySet());
+        }
+
+        public List<Home> homes(UUID player) {
+            return List.of();
+        }
+
+        public void setHome(UUID player, Home home) {
+        }
+
+        public boolean removeHome(UUID player, String name) {
+            return false;
+        }
+    }
+
+    /** 内存版执行上下文。 */
     private static final class FakeContext implements ExecutionContext {
         final Map<String, String> args = new LinkedHashMap<>();
         final List<String> replies = new ArrayList<>();
         final List<String> errors = new ArrayList<>();
+        final List<String> gameLogs = new ArrayList<>();
         final MemoryVariables vars = new MemoryVariables();
         final MemoryPlayers players = new MemoryPlayers();
         private final ScPaths paths;
 
         FakeContext(ScPaths paths) {
             this.paths = paths;
+        }
+
+        String lastReply() {
+            return replies.isEmpty() ? "" : replies.get(replies.size() - 1);
+        }
+
+        boolean hasError(String fragment) {
+            return errors.stream().anyMatch(e -> e.contains(fragment));
         }
 
         public boolean isPlayer() {
@@ -261,6 +389,11 @@ public final class KernelSmokeTest {
         }
 
         public void gameLog(String message) {
+            gameLogs.add(message);
+        }
+
+        String lastGameLog() {
+            return gameLogs.isEmpty() ? "" : gameLogs.get(gameLogs.size() - 1);
         }
 
         public CommandLogger commandLog() {
@@ -271,63 +404,17 @@ public final class KernelSmokeTest {
             return paths;
         }
 
-        public VariableProvider variables() {
+        public VariableStore variables() {
             return vars;
         }
 
         public PlayerDataStore players() {
             return players;
         }
-    }
 
-    private static final class MemoryVariables implements VariableProvider {
-        private final Map<String, String> values = new LinkedHashMap<>();
-
-        public Optional<String> get(String name) {
-            return Optional.ofNullable(values.get(name));
-        }
-
-        public void set(String name, String value) {
-            values.put(name, value);
-        }
-
-        public void delete(String name) {
-            values.remove(name);
-        }
-
-        public Set<String> names() {
-            return Set.copyOf(values.keySet());
-        }
-    }
-
-    private static final class MemoryPlayers implements PlayerDataStore {
-        private final Map<UUID, Map<String, String>> data = new LinkedHashMap<>();
-
-        public Optional<String> get(UUID player, String key) {
-            return Optional.ofNullable(data.getOrDefault(player, Map.of()).get(key));
-        }
-
-        public void set(UUID player, String key, String value) {
-            data.computeIfAbsent(player, k -> new LinkedHashMap<>()).put(key, value);
-        }
-
-        public void remove(UUID player, String key) {
-            data.getOrDefault(player, new LinkedHashMap<>()).remove(key);
-        }
-
-        public Set<String> keys(UUID player) {
-            return Set.copyOf(data.getOrDefault(player, Map.of()).keySet());
-        }
-
-        public List<Home> homes(UUID player) {
-            return List.of();
-        }
-
-        public void setHome(UUID player, Home home) {
-        }
-
-        public boolean removeHome(UUID player, String name) {
-            return false;
+        public currkill.sc_csc.api.CscContext csc() {
+            return new HostCscContext(vars, this::reply, this::error, this::gameLog,
+                    CommandLogger.NOOP, paths);
         }
     }
 }

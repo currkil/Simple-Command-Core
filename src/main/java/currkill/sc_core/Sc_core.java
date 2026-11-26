@@ -3,6 +3,7 @@ package currkill.sc_core;
 import currkill.sc_core.api.CommandLogger;
 import currkill.sc_core.api.ScPaths;
 import currkill.sc_core.forge.BrigadierBridge;
+import currkill.sc_core.forge.ReplHandler;
 import currkill.sc_core.kernel.CoreServices;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
@@ -40,6 +41,7 @@ public class Sc_core {
         SimpleCommandCore.registerBuiltins();
 
         MinecraftForge.EVENT_BUS.addListener(this::onRegisterCommands);
+        MinecraftForge.EVENT_BUS.addListener(ReplHandler::onChat);
     }
 
     private void onRegisterCommands(RegisterCommandsEvent event) {

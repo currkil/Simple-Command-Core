@@ -1,11 +1,14 @@
 package currkill.sc_core.api;
 
+import currkill.sc_csc.api.CscContext;
+
 import java.util.Optional;
 
 /**
  * 指令执行上下文。不依赖 Brigadier：Brigadier 适配层构造它，Paper 适配层将来也构造它。
  *
  * <p>效果类（{@link CommandEffect}）只通过本接口拿参数、回消息、取变量、取路径。
+ * 需要跑 CSC 脚本时用 {@link #csc()} 拿宿主上下文，CSC 的所有交互都走它。
  */
 public interface ExecutionContext {
 
@@ -48,9 +51,16 @@ public interface ExecutionContext {
     /** 路径解析。 */
     ScPaths paths();
 
-    /** 当前世界的变量表。 */
-    VariableProvider variables();
+    /** 当前世界的类型化变量表。 */
+    VariableStore variables();
 
     /** 跨世界的玩家数据。 */
     PlayerDataStore players();
+
+    /**
+     * 绑定到本次执行的 CSC 宿主上下文：输出接执行者、变量接世界存档、流落在固定目录。
+     *
+     * <p>每次调用返回新上下文（流属于执行期资源，指令结束时由调用方关闭）。
+     */
+    CscContext csc();
 }

@@ -1,23 +1,22 @@
 package currkill.sc_core;
 
-import currkill.sc_csc.Csc;
-import currkill.sc_csc.api.FormatResult;
-import currkill.sc_csc.api.VariableProvider;
+import currkill.sc_csc.api.CscContext;
+import currkill.sc_csc.api.CscEvaluator;
+import currkill.sc_csc.api.CscValue;
 import currkill.sc_core.api.CommandLogger;
 import currkill.sc_core.api.ExecutionContext;
 import currkill.sc_core.api.ModRegistration;
 import currkill.sc_core.api.ScPaths;
-import currkill.sc_core.kernel.CoreCommands;
+import currkill.sc_core.kernel.CscCommands;
 import currkill.sc_core.kernel.CoreServices;
-import currkill.sc_core.kernel.Diagnostics;
 import currkill.sc_core.kernel.NamespaceRegistry;
 
 /**
  * SC Core 的对外门面，也是子模组唯一该碰的入口。
  *
- * <p>子模组通过它做三件事：注册自己的命名空间；把指令参数交给 CSC 格式化；
- * 取共享设施（路径、指令日志、命名空间注册表）。子模组不应直接 import
- * {@code currkill.sc_csc} 的内部类——CSC 的语义变更由这里吸收。
+ * <p>子模组通过它做三件事：注册自己的命名空间；把指令参数交给 CSC 处理；
+ * 取共享设施（路径、指令日志、CSC 会话表）。子模组不应直接依赖 CSC 的内部实现——
+ * CSC 的语义变更由这里吸收。
  *
  * <p>所有方法都是静态的，因为 Core 是单例模组；{@link #init} 由平台适配层在
  * 模组构造时调用一次，其余方法在初始化完成后才可用。
@@ -27,8 +26,8 @@ public final class SimpleCommandCore {
     /** 与 {@code mods.toml} 的 modId 一致。 */
     public static final String MOD_ID = "sc_core";
 
-    /** 内置命名空间。 */
-    public static final String CORE_NAMESPACE = NamespaceRegistry.CORE_NAMESPACE;
+    /** 内置命名空间：CSC 的全部指令都挂在这里。 */
+    public static final String CSC_NAMESPACE = NamespaceRegistry.CSC_NAMESPACE;
 
     private static volatile CoreServices services;
 
@@ -68,61 +67,46 @@ public final class SimpleCommandCore {
         services().registry().register(registration);
     }
 
-    /** Core 自己注册内置的 {@code core} 命名空间。 */
+    /** Core 自己注册内置的 {@code csc} 命名空间。 */
     static void registerBuiltins() {
         register(ModRegistration.builder(MOD_ID)
-                .namespace(CORE_NAMESPACE)
-                .commands(CoreCommands::build)
+                .namespace(CSC_NAMESPACE)
+                .commands(CscCommands::build)
                 .build());
     }
 
     // ---------------------------------------------------------------- CSC 封装
 
     /**
-     * 格式化一段文本，返回结果文本与全部诊断。
-     *
-     * <p>适合调用方想自己决定提示方式的场景；诊断的级别含义见 CSC 的
-     * {@code Severity}，投递策略由调用方实现。
-     *
-     * @param raw  原始文本，可为 {@code null}
-     * @param vars 变量来源，可为 {@code null}（等价于空来源）
-     */
-    public static FormatResult format(String raw, VariableProvider vars) {
-        return Csc.format(raw, vars);
-    }
-
-    /**
-     * 只要格式化后的文本，丢掉诊断。需要提示玩家时请改用
-     * {@link #format(String, VariableProvider)} 或 {@link #formatText(ExecutionContext, String)}。
-     */
-    public static String formatText(String raw, VariableProvider vars) {
-        return Csc.formatText(raw, vars);
-    }
-
-    /**
-     * 用执行上下文的变量表格式化，并按 Core 的分级自动投递诊断，返回结果文本。
-     *
-     * <p>严重错误进聊天栏、游戏日志、指令日志；隐式转换只进指令日志。这是子模组
-     * 处理指令参数时最常用的重载。
+     * 用执行上下文跑一遍 CSC 文本格式化：处理转义、注释、变量、表达式，并自动按
+     * Core 的分级投递诊断。这是子模组处理指令参数时最常用的入口。
      */
     public static String formatText(ExecutionContext ctx, String raw) {
-        FormatResult result = Csc.format(raw, ctx.variables());
-        Diagnostics.report(ctx, result);
-        return result.text();
+        return CscEvaluator.formatText(raw, ctx.csc());
+    }
+
+    /** 用给定的 CSC 上下文做文本格式化，诊断同样交回上下文。 */
+    public static String formatText(String raw, CscContext context) {
+        return CscEvaluator.formatText(raw, context);
     }
 
     /**
-     * 直接求值一条裸表达式（不带表达式包装），给脚本层、终端一类调用方复用。
+     * 求值一条表达式，返回 {@link CscValue}（类型信息保留）。
      *
-     * @throws currkill.sc_csc.api.EvaluationException 语法错误、除零、未知变量等
+     * @throws currkill.sc_csc.api.CscRuntimeException 语法错误、除零、未知变量、转换失败
      */
-    public static String evaluate(String expression, VariableProvider vars) {
-        return Csc.evaluate(expression, vars);
+    public static CscValue evaluate(String expression, CscContext context) {
+        return CscEvaluator.evaluate(expression, context);
+    }
+
+    /** 执行脚本；语法与运行时错误通过上下文记成严重错误，不向调用方抛。 */
+    public static CscValue runScript(String script, CscContext context) {
+        return CscEvaluator.evaluateScript(script, context);
     }
 
     // ---------------------------------------------------------------- 共享设施
 
-    /** 全家桶统一的路径解析（配置、备份、日志、缓存）。 */
+    /** 全家桶统一的路径解析（配置、备份、日志、脚本、缓存）。 */
     public static ScPaths paths() {
         return services().paths();
     }
